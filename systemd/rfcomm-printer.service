@@ -1,0 +1,15 @@
+[Unit]
+Description=Bind RFCOMM for YHK-D0D0 printer
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/rfcomm release /dev/rfcomm0
+ExecStart=/usr/bin/rfcomm bind /dev/rfcomm0 D6:85:FD:2C:D0:D0 2
+ExecStop=/usr/bin/rfcomm release /dev/rfcomm0
+RemainAfterExit=yes
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
