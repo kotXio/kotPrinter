@@ -1,3 +1,7 @@
+# Example RFCOMM unit for the tested printer.
+# `python3 print.py install` generates the installed unit from kotprinter.json or
+# `--config PATH`; edit config.device.* rather than this template for installs.
+
 [Unit]
 Description=Bind RFCOMM for YHK-D0D0 printer
 After=bluetooth.target

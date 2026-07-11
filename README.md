@@ -5,20 +5,39 @@
 A small Python CLI for printing text and images on a cheap Bluetooth thermal
 cat printer without the vendor mobile app.
 
-I bought this printer cheaply. It came with Android and iOS apps, but the app
-experience was, gently speaking, not great. I also wanted to use the printer in
-custom workflows, and being tied to a phone app was getting in the way.
+Current release: `0.3`.
 
-Before writing this tool I tried the available scripts and applications I could
-find, but none of them worked with my printer. I ended up capturing the
-Bluetooth traffic between the mobile app and the printer, then reverse
-engineering enough of the exchange to print from a Raspberry Pi.
+The tested printer ignores many normal POS commands, so this tool renders text
+and images into a `384`-dot-wide 1-bit raster and sends that raster over
+Bluetooth RFCOMM. It is not a CUPS driver and does not run a print server.
 
-The funny part: this printer does not seem to support many normal POS commands.
-In practice, the reliable path is to render everything into a 384-dot-wide
-1-bit image and send it as raster data over Bluetooth RFCOMM.
+The classic entrypoint still works:
 
-That is what this CLI does.
+```sh
+python3 print.py text 'hello'
+```
+
+`v0.3` also provides a package entrypoint:
+
+```sh
+python3 -m kotprinter text 'hello'
+```
+
+## Features
+
+- Print Unicode text by rendering it to an image first.
+- Print PNG, JPEG, and other image formats supported by Pillow.
+- Preview any text or image job as `debug.png` without touching the printer.
+- Configure printer, text, and image defaults with `kotprinter.json`.
+- Check local dependencies, Bluetooth, RFCOMM, systemd, permissions, and live
+  printer reachability.
+- Generate and install a systemd RFCOMM service from the active config.
+- Tune text size, alignment, padding, line spacing, and text density.
+- Tune image brightness, contrast, gamma, dithering, thresholding, inversion,
+  rotation, crop, fit, and autofit behavior.
+- Use presets for common jobs: `text`, `label`, `photo`, and `sticker`.
+- Rebind/recover `/dev/rfcomm0` before jobs when the device node is stale or
+  missing.
 
 ## Supported Printer
 
@@ -34,77 +53,8 @@ Known hardware details:
 - Long button press turns the printer on or off
 - Double button press prints the printer self-test and MAC address
 
-This project may work with similar cat printers, but the Bluetooth MAC address,
-RFCOMM channel, print width, and protocol quirks may differ.
-
-## What It Can Do
-
-- Print Unicode text by rendering it to an image first
-- Print PNG/JPEG/etc. images supported by Pillow
-- Preview the generated print raster as `debug.png`
-- Control text size, alignment, padding, line spacing, and text density
-- Adjust image preprocessing with brightness, contrast, gamma, and dithering
-- Query printer voltage, DPI, battery estimate, and serial number
-- Reconnect/rebind `/dev/rfcomm0` before jobs when the printer is asleep or the
-  RFCOMM device is stale
-
-The tool talks directly to `/dev/rfcomm0`. It is not a CUPS driver and does not
-run a print server.
-
-## Project Files
-
-- `print.py` - main CLI tool
-- `systemd/rfcomm-printer.service` - optional RFCOMM bind unit
-- `assets/cat_printer.jpg` - project photo used in this README
-- `LICENSE` - MIT license
-
-## Requirements
-
-System packages on Debian or Raspberry Pi OS:
-
-```sh
-sudo apt update
-sudo apt install python3 python3-pip fonts-dejavu-core bluez
-```
-
-Python packages:
-
-```text
-Pillow>=9.4
-pyserial>=3.5
-```
-
-Install them with pip:
-
-```sh
-python3 -m pip install "Pillow>=9.4" "pyserial>=3.5"
-```
-
-Or use distro packages:
-
-```sh
-sudo apt install python3-pil python3-serial
-```
-
-The default font is:
-
-```text
-/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf
-```
-
-It is provided by the `fonts-dejavu-core` package. Other useful fonts from the
-same package usually include:
-
-```text
-DejaVuSans-Bold.ttf
-DejaVuSansMono-Bold.ttf
-DejaVuSansMono.ttf
-DejaVuSans.ttf
-DejaVuSerif-Bold.ttf
-DejaVuSerif.ttf
-```
-
-To use another font, change `FONT_PATH` in `print.py`.
+Similar cat printers may work, but the Bluetooth MAC address, RFCOMM channel,
+print width, and protocol behavior may differ.
 
 ## Installation
 
@@ -112,18 +62,29 @@ Clone the repository:
 
 ```sh
 git clone https://github.com/kotXio/kotPrinter.git
-cd catPrinter
+cd kotPrinter
 ```
 
-Install dependencies:
+Install system dependencies on Debian or Raspberry Pi OS:
 
 ```sh
 sudo apt update
 sudo apt install python3 python3-pip fonts-dejavu-core bluez
+```
+
+Install Python dependencies:
+
+```sh
 python3 -m pip install "Pillow>=9.4" "pyserial>=3.5"
 ```
 
-Make sure your user can access serial devices:
+Or install them from distro packages:
+
+```sh
+sudo apt install python3-pil python3-serial
+```
+
+Allow your user to access serial devices:
 
 ```sh
 sudo usermod -aG dialout "$USER"
@@ -131,7 +92,16 @@ sudo usermod -aG dialout "$USER"
 
 Log out and back in after changing groups.
 
-## Bluetooth Setup
+The default font is provided by `fonts-dejavu-core`:
+
+```text
+/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf
+```
+
+To use another font, set `text.font` in `kotprinter.json` or pass another config
+file with `--config`.
+
+## Printer Setup
 
 Turn on the printer first. If you do not know its MAC address, double press the
 printer button to print the self-test page, or scan for it:
@@ -141,60 +111,92 @@ bluetoothctl
 scan on
 ```
 
+Edit the `device` block in `kotprinter.json`:
+
+```json
+{
+  "device": {
+    "name": "MY-CAT-PRINTER",
+    "mac": "AA:BB:CC:DD:EE:FF",
+    "channel": 2,
+    "port": "/dev/rfcomm0",
+    "baudrate": 115200,
+    "rfcommService": "rfcomm-printer.service"
+  }
+}
+```
+
+For the tested printer, RFCOMM channel `2` is correct. Keep `/dev/rfcomm0`
+unless you intentionally want a different local RFCOMM device.
+
 Pair and trust the printer:
 
 ```sh
 bluetoothctl
 scan on
-pair D6:85:FD:2C:D0:D0
-trust D6:85:FD:2C:D0:D0
+pair AA:BB:CC:DD:EE:FF
+trust AA:BB:CC:DD:EE:FF
 quit
 ```
 
-Replace `D6:85:FD:2C:D0:D0` with your printer MAC address.
+Generate and inspect the systemd RFCOMM service:
 
-## RFCOMM Setup
-
-The CLI expects the printer at:
-
-```text
-/dev/rfcomm0
+```sh
+python3 print.py install --dry-run
 ```
 
-Manual bind:
+`install --dry-run` is read-only. It prints the generated unit and the system
+commands that would be run.
+
+Apply it:
+
+```sh
+python3 print.py install
+```
+
+`install` writes a generated service to `/etc/systemd/system`, runs
+`systemctl daemon-reload`, and enables/starts the configured service. It reports
+serial group membership but does not change user groups automatically.
+
+The service is generated from the active config. The checked-in
+`systemd/rfcomm-printer.service` file is only an example for the tested printer;
+do not edit it for normal installs.
+
+This printer does not keep a permanently active Bluetooth connection after each
+job. Tools may show the RFCOMM connection as closed when the printer is idle.
+That is not necessarily a failure: the connection is opened again when the CLI
+prints, runs `info`, or runs `check --live`.
+
+If you prefer to bind RFCOMM manually, use the configured MAC address and
+channel:
 
 ```sh
 sudo rfcomm release /dev/rfcomm0
-sudo rfcomm bind /dev/rfcomm0 D6:85:FD:2C:D0:D0 2
+sudo rfcomm bind /dev/rfcomm0 AA:BB:CC:DD:EE:FF 2
 ls -l /dev/rfcomm0
 ```
 
-The tested printer uses RFCOMM channel `2`.
+## Quick Start
 
-Optional systemd unit:
+Check the CLI version:
 
 ```sh
-sudo install -m 0644 systemd/rfcomm-printer.service /etc/systemd/system/rfcomm-printer.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now rfcomm-printer.service
+python3 print.py --version
+python3 -m kotprinter --version
 ```
 
-Before installing the unit for your own printer, edit:
+Check the local setup:
 
-```text
-systemd/rfcomm-printer.service
+```sh
+python3 print.py check
+python3 print.py check --live
 ```
 
-and replace the MAC address in:
+`check` is read-only. `check --live` opens the configured RFCOMM device and
+sends the wake/info handshake, but it does not print paper.
 
-```ini
-ExecStart=/usr/bin/rfcomm bind /dev/rfcomm0 D6:85:FD:2C:D0:D0 2
-```
-
-The unit is a one-shot bind. It creates `/dev/rfcomm0`, but it is not a
-long-running print daemon.
-
-## Quick Start
+Do not treat an idle closed RFCOMM connection as proof that printing is broken.
+Use `check --live`, `info`, or a preview/print command to test the real path.
 
 Show printer info:
 
@@ -202,29 +204,13 @@ Show printer info:
 python3 print.py info
 ```
 
+`info` queries voltage, DPI, battery estimate, serial number, and effective
+settings. It does not print paper.
+
 Print text:
 
 ```sh
 python3 print.py text 'hello cat printer'
-```
-
-Print multiple lines:
-
-```sh
-python3 print.py text 'hello\nworld'
-```
-
-Print centered larger text:
-
-```sh
-python3 print.py text 'CENTER' --align center --size 28
-```
-
-Print lighter or darker text:
-
-```sh
-python3 print.py text 'quiet label' --text-density light
-python3 print.py text 'bold label' --text-density dark
 ```
 
 Print an image:
@@ -233,7 +219,7 @@ Print an image:
 python3 print.py img ./picture.png
 ```
 
-Save a preview instead of printing:
+Preview instead of printing:
 
 ```sh
 python3 print.py text 'preview only' --preview
@@ -242,88 +228,188 @@ python3 print.py img ./picture.png --preview
 
 Preview output is written to `debug.png` in the current working directory.
 
-## CLI Reference
+## Common Recipes
 
-Top-level commands:
-
-```sh
-python3 print.py info
-python3 print.py text TEXT [options]
-python3 print.py img PATH [options]
-```
-
-### `info`
-
-Queries the printer and prints voltage, DPI, battery estimate, serial number,
-and current default settings.
-
-```sh
-python3 print.py info
-```
-
-### `text`
-
-Renders text into a 384-dot-wide raster image, then prints it.
+Text:
 
 ```sh
 python3 print.py text 'hello'
-```
-
-Text-specific options:
-
-| Option | Values | Default | Description |
-| --- | --- | --- | --- |
-| `-s`, `--size` | integer `> 0` | `20` | Font size in pixels. |
-| `-a`, `--align` | `left`, `center`, `right` | `left` | Horizontal text alignment. |
-| `-p`, `--pad_y` | integer `>= 0` | `6` | Top and bottom padding in pixels. |
-| `-l`, `--line_spacing` | float `>= 0` | `0.5` | Extra line spacing as a multiplier of font size. |
-| `--text-density` | `light`, `normal`, `dark` | `normal` | Text-specific density control. |
-
-`--text-density normal` matches the original/default text rendering. `light`
-removes a small regular pattern of black text pixels. `dark` expands black text
-pixels to make letters bolder.
-
-Examples:
-
-```sh
-python3 print.py text 'left aligned'
-python3 print.py text 'centered' --align center
-python3 print.py text 'large' --size 32
+python3 print.py text 'CENTER' --align center --size 28
 python3 print.py text 'A\n\nB' --line_spacing 1.0
-python3 print.py text 'light' --text-density light
-python3 print.py text 'dark' --text-density dark
+python3 print.py text 'quiet label' --text-density light
+python3 print.py text 'bold label' --text-density dark
+python3 print.py text 'LABEL' --preset label
 ```
 
-### `img`
-
-Loads an image with Pillow, preprocesses it, resizes or centers it to the
-printer width, then prints it as raster data.
+Images:
 
 ```sh
-python3 print.py img ./picture.png
+python3 print.py img ./photo.jpg --preset photo --preview
+python3 print.py img ./photo.jpg --preset photo
+python3 print.py img ./label.png --preset label
+python3 print.py img ./qr.png --preset text --threshold 150
+python3 print.py img ./photo.jpg --fit contain --height 512
+python3 print.py img ./photo.jpg --fit cover --height 512 --crop-align center
+python3 print.py img ./photo.jpg --fit autofit
+python3 print.py img ./label.png --invert --threshold 160
 ```
+
+Use preview-first iteration for image tuning:
+
+```sh
+python3 print.py img ./photo.jpg --preset photo --fit autofit --preview
+python3 print.py img ./photo.jpg --preset photo --fit autofit
+```
+
+Use an alternate config:
+
+```sh
+python3 print.py --config ./my-printer.json check
+python3 print.py --config ./my-printer.json text 'hello'
+python3 -m kotprinter --config ./my-printer.json img ./picture.png --preview
+```
+
+Global options such as `--config` must appear before the command name.
+
+## Configuration
+
+The CLI has built-in defaults, so it can run without a config file. When
+`kotprinter.json` exists in the current working directory, it is loaded
+automatically. Use `--config PATH` to load a different JSON config.
+
+Precedence:
+
+```text
+built-in defaults -> JSON config -> preset defaults -> explicit CLI arguments
+```
+
+The checked-in `kotprinter.json` is a complete example for the tested printer.
+Supported config sections:
+
+| Section | Keys |
+| --- | --- |
+| `schemaVersion` | currently `1` |
+| `device` | `name`, `mac`, `channel`, `port`, `baudrate`, `rfcommService` |
+| `printer` | `width`, `feed`, `repeat` |
+| `text` | `font`, `fontSize`, `padY`, `align`, `lineSpacing`, `density` |
+| `image` | `method`, `brightness`, `contrast`, `gamma`, `rotate`, `fit`, `height`, `cropAlign`, `invert`, `threshold` |
+
+Important rules:
+
+- Unknown config keys are ignored with a warning.
+- Invalid known values fail with a short CLI error.
+- `schemaVersion` must be `1`.
+- `device.mac` must be a Bluetooth MAC address.
+- `device.port` must be an absolute path.
+- `device.rfcommService` must be a `.service` name, not a path.
+- `printer.width` must be divisible by `8`.
+- `image.rotate` must be `0`, `90`, `180`, or `270`.
+- `image.threshold` must be `0..255` or `null`.
+
+For RFCOMM install, the `device` block is the source of truth. `install` does
+not prompt for a MAC address and does not read the checked-in systemd example as
+the primary input.
+
+## Command Reference
+
+Entrypoints:
+
+```sh
+python3 print.py --version
+python3 print.py [--config PATH] COMMAND ...
+python3 -m kotprinter --version
+python3 -m kotprinter [--config PATH] COMMAND ...
+```
+
+Commands:
+
+| Command | Description |
+| --- | --- |
+| `check [--live]` | Inspect local setup. `--live` also contacts the printer without printing. |
+| `install [--dry-run]` | Generate and install the systemd RFCOMM binding from config. |
+| `info` | Query printer voltage, DPI, battery estimate, serial number, and settings. |
+| `text TEXT [options]` | Render text to a raster image and print it. |
+| `img PATH [options]` | Render an image file to a raster image and print it. |
+
+### Text Options
+
+| Option | Values | Description |
+| --- | --- | --- |
+| `--preset` | `text`, `label` | Apply named defaults before explicit text options. |
+| `-s`, `--size` | integer `> 0` | Font size in pixels. |
+| `-a`, `--align` | `left`, `center`, `right` | Horizontal alignment. |
+| `-p`, `--pad_y` | integer `>= 0` | Top and bottom padding in pixels. |
+| `-l`, `--line_spacing` | float `>= 0` | Extra line spacing as a multiplier of font size. |
+| `--text-density` | `light`, `normal`, `dark` | Text raster density. |
+
+### Image Options
 
 Image files can be any format supported by Pillow, for example PNG or JPEG.
+EXIF orientation is applied before explicit rotation, crop, and fit.
 
-Examples:
+| Option | Values | Description |
+| --- | --- | --- |
+| `--preset` | `text`, `label`, `photo`, `sticker` | Apply named defaults before explicit image options. |
+| `--rotate` | `0`, `90`, `180`, `270` | Rotate clockwise before crop and fit. |
+| `--crop` | `left,top,width,height` | Crop the rotated source image before fit. |
+| `--fit` | `width`, `contain`, `cover`, `stretch`, `none`, `autofit` | Map the image to the printer width. |
+| `--height` | integer `> 0` | Target height for `contain`, `cover`, `stretch`, and height-aware `autofit`. |
+| `--crop-align` | `top`, `center`, `bottom` | Vertical crop alignment for `cover`. |
+| `--invert` | flag | Invert black and white before final 1-bit conversion. |
+| `--threshold` | integer `0..255` | Use an exact threshold instead of dithering. |
+
+Fit behavior:
+
+- `width` preserves aspect ratio and scales to the configured printer width.
+- `contain` preserves aspect ratio inside `printer.width x --height` and pads
+  with white.
+- `cover` fills `printer.width x --height`, preserving aspect ratio and cropping
+  overflow.
+- `stretch` forces the exact `printer.width x --height` size.
+- `none` avoids scaling and clips or pads to the configured printer width.
+- `autofit` chooses a predictable rotation and fit mode, then prints the chosen
+  decision.
+
+Image processing order:
+
+```text
+open image
+-> apply EXIF orientation
+-> rotate or autofit rotation
+-> crop
+-> fit, resize, crop, or pad
+-> brightness, contrast, gamma
+-> invert
+-> threshold or dithering
+-> raster print
+```
+
+### Presets
+
+| Preset | Commands | Intended use | Defaults |
+| --- | --- | --- | --- |
+| `text` | `text`, `img` | text, documents, screenshots, QR-like images | `method=th`, `contrast=1.2`; images also use `threshold=160`, `fit=width` |
+| `label` | `text`, `img` | labels and simple graphics | text uses safe Floyd-Steinberg plus dark density; images use ordered rendering |
+| `photo` | `img` | photos and smoother gradients | `method=fs`, `contrast=1.1`, `gamma=0.95`, `fit=autofit` |
+| `sticker` | `img` | icons and high-contrast illustrations | `method=ordered`, `contrast=1.35`, `brightness=1.05`, `gamma=0.9`, `fit=autofit` |
+
+Preset values are defaults. Explicit CLI options override them:
 
 ```sh
-python3 print.py img ./label.png
-python3 print.py img ./photo.jpg --method fs
-python3 print.py img ./photo.jpg --brightness 1.2 --contrast 1.4 --gamma 1.2
-python3 print.py img ./label.png --repeat 2
+python3 print.py img ./photo.jpg --preset photo --contrast 1.4 --method ordered
+python3 print.py text 'label' --preset label --text-density normal
 ```
 
 ### Shared Render Options
 
 These options are available for both `text` and `img`:
 
-| Option | Values | Default | Description |
-| --- | --- | --- | --- |
-| `-m`, `--method` | `fs`, `ordered`, `th` | `fs` | Raster conversion method. `fs` uses Floyd-Steinberg dithering, `ordered` uses a simple ordered conversion, and `th` uses hard thresholding. |
-| `-b`, `--brightness` | float `> 0` | `1.0` | Brightness multiplier before 1-bit conversion. |
-| `-c`, `--contrast` | float `> 0` | `1.0` | Contrast multiplier before 1-bit conversion. |
-| `-g`, `--gamma` | float `> 0` | `1.0` | Gamma correction before 1-bit conversion. |
+| Option | Values | Description |
+| --- | --- | --- |
+| `-m`, `--method` | `fs`, `ordered`, `th` | Raster conversion method. |
+| `-b`, `--brightness` | float `> 0` | Brightness multiplier before 1-bit conversion. |
+| `-c`, `--contrast` | float `> 0` | Contrast multiplier before 1-bit conversion. |
+| `-g`, `--gamma` | float `> 0` | Gamma correction before 1-bit conversion. |
 
 For normal text darkness control, prefer `--text-density`. Extreme
 brightness/contrast/gamma values can turn text into a blank raster or a solid
@@ -333,35 +419,56 @@ black stripe.
 
 These options are available for both `text` and `img`:
 
-| Option | Values | Default | Description |
-| --- | --- | --- | --- |
-| `--feed` | integer `>= 0` | `5` | Number of newline feed lines after printing. |
-| `--repeat` | integer `> 0` | `1` | Send the same raster payload multiple times. |
-| `--preview` | flag | off | Save `debug.png` instead of opening the printer. |
+| Option | Values | Description |
+| --- | --- | --- |
+| `--feed` | integer `>= 0` | Number of newline feed lines after printing. |
+| `--repeat` | integer `> 0` | Send the same raster payload multiple times. |
+| `--preview` | flag | Save `debug.png` instead of opening the printer. |
 
 ## How It Works
 
 The printer protocol used here is intentionally simple:
 
-1. Open `/dev/rfcomm0` at `115200`.
+1. Open the configured RFCOMM device, `/dev/rfcomm0` by default, at the
+   configured baudrate, `115200` by default.
 2. Send a short wake/info handshake.
-3. Render text or image input into a 384-dot-wide 1-bit image.
+3. Render text or image input into a 1-bit raster at the configured printer
+   width, `384` dots by default.
 4. Pack image rows into ESC/POS-style raster bytes.
-5. Send the raster payload to the printer.
+5. Send the raster payload to the printer in height-bounded bands.
 6. Feed paper by sending newline characters.
 
-The CLI retries the wake handshake and can restart `rfcomm-printer.service`
-before a job if `/dev/rfcomm0` is missing, closed, or stale. It does not retry
+The CLI retries the wake handshake and can restart the configured RFCOMM service
+before a job if the device node is missing, closed, or stale. It does not retry
 after a payload write failure because the printer may already have produced a
 partial print.
 
+Long images are split into several ESC/POS raster commands before transmission.
+This keeps large photo prints from overwhelming the small printer buffer while
+leaving preview output unchanged.
+
 ## Troubleshooting
 
-### `/dev/rfcomm0` exists, but the printer does not answer
+### Start With The Built-In Checks
+
+```sh
+python3 print.py check
+python3 print.py check --live
+python3 print.py info
+```
+
+`check --live` and `info` contact the printer but do not print paper.
+
+### `/dev/rfcomm0` Exists, But The Printer Does Not Answer
 
 `/dev/rfcomm0` existing does not prove the printer is awake or connected. The
 printer may be off, asleep, out of range, already busy, or the RFCOMM bind may
 be stale.
+
+After a successful job, the tested printer often drops the active Bluetooth
+connection while leaving the RFCOMM binding in place. That idle state can look
+misleading in low-level diagnostics. A new `info`, `check --live`, or print
+command should reconnect for the duration of the operation.
 
 Try:
 
@@ -373,12 +480,30 @@ python3 print.py info
 
 If that still fails, power-cycle the printer and retry.
 
-### The printer goes away after sitting idle
+### The Printer Goes Away After Sitting Idle
 
 This printer runs on battery and may power off or sleep by itself. Turn it on
 again before printing. A long button press toggles power.
 
-### Text density looks wrong
+### `install` Fails With `sudo -n`
+
+`install` uses non-interactive `sudo -n`, so it fails instead of prompting for a
+password. Run it from a user with passwordless sudo for the required systemd
+commands, run it as root, or copy the commands printed by `install --dry-run`
+and run them manually.
+
+### Permission Denied Opening `/dev/rfcomm0`
+
+Make sure the current user is in the serial device group, usually `dialout`:
+
+```sh
+groups "$USER"
+sudo usermod -aG dialout "$USER"
+```
+
+Log out and back in after changing groups.
+
+### Text Density Looks Wrong
 
 Use:
 
@@ -392,7 +517,7 @@ Avoid using extreme `--brightness`, `--contrast`, or `--gamma` values for text.
 Those options are generic raster preprocessing controls and can overdrive text
 into an empty or fully black raster.
 
-### Image output is too dark or too light
+### Image Output Is Too Dark Or Too Light
 
 Try preview first:
 
@@ -403,17 +528,18 @@ python3 print.py img ./photo.jpg --preview
 Then adjust:
 
 ```sh
-python3 print.py img ./photo.jpg --brightness 1.2 --contrast 1.3 --gamma 1.1
-python3 print.py img ./photo.jpg --method th
+python3 print.py img ./photo.jpg --preset photo --brightness 1.2
+python3 print.py img ./photo.jpg --preset photo --contrast 1.3 --gamma 1.1
+python3 print.py img ./photo.jpg --method th --threshold 160
 ```
 
-### Desktop Bluetooth widgets
+### Desktop Bluetooth Widgets
 
 On Raspberry Pi desktop systems, a panel Bluetooth widget can register its own
 BlueZ agent and may interfere with command-line pairing or recovery. During
 setup, keep the GUI Bluetooth menu closed and use `bluetoothctl` consistently.
 
-### Useful Checks
+### Useful System Commands
 
 ```sh
 systemctl status bluetooth.service --no-pager
@@ -423,15 +549,19 @@ rfcomm -a
 ls -l /dev/rfcomm0
 bluetoothctl show
 bluetoothctl devices
-python3 print.py info
 ```
 
 ## Known Limitations
 
 - Tested with one printer model, currently identified as `YHK-D0D0`.
-- The systemd unit contains a hardcoded MAC address and RFCOMM channel.
+- Similar printers may need a different MAC address, RFCOMM channel, width, or
+  protocol behavior.
+- The checked-in systemd unit is only an example/template for the tested
+  printer. Real installs are generated from the active config.
 - The tool prints raster images; many normal POS text commands are ignored by
   this printer.
+- The tested printer can behave as powered off after idle sleep; if it does not
+  answer, turn it on manually and retry.
 - No queue or print server mode is implemented yet.
 - No CUPS integration is provided.
 

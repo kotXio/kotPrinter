@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "device": {
+    "name": "YHK-D0D0",
+    "mac": "D6:85:FD:2C:D0:D0",
+    "channel": 2,
+    "port": "/dev/rfcomm0",
+    "baudrate": 115200,
+    "rfcommService": "rfcomm-printer.service"
+  },
+  "printer": {
+    "width": 384,
+    "feed": 5,
+    "repeat": 1
+  },
+  "text": {
+    "font": "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "fontSize": 20,
+    "padY": 6,
+    "align": "left",
+    "lineSpacing": 0.5,
+    "density": "normal"
+  },
+  "image": {
+    "method": "fs",
+    "brightness": 1.0,
+    "contrast": 1.0,
+    "gamma": 1.0,
+    "rotate": 0,
+    "fit": "width",
+    "height": null,
+    "cropAlign": "center",
+    "invert": false,
+    "threshold": null
+  }
+}
