@@ -51,21 +51,26 @@ python3 -m kotprinter text 'hello'
 
 ## Web UI Screenshots
 
-The `0.4` web UI is useful from a desk and from a phone: render first, check the
-thermal preview, then print only when the result looks right.
+Version `0.4` adds the part this project was missing: a small local web app for
+daily printing. Open it on the Pi, a laptop, or a phone on the same network,
+prepare the job, check the thermal preview, and send it only when it looks
+right.
 
 <p>
   <img src="assets/screenshots/web-desktop-print-overview.png" alt="KotPrinter desktop print view with text editor, options, thermal preview, and printer context" width="760">
 </p>
 
-Image printing keeps the same workflow on mobile, with the original/thermal
-view, presets, fit, rotation, and contrast controls close at hand.
+The mobile view keeps the image preview, thermal render, presets, fit, rotation,
+brightness, contrast, and print action reachable when you are standing next to
+the printer.
 
 <p>
   <img src="assets/screenshots/web-mobile-image-options.png" alt="KotPrinter mobile image print view with thermal preview and options" width="360">
 </p>
 
-History keeps rendered jobs around for checking and reprinting later.
+History is there for the normal small experiments that happen with thermal
+paper. Rendered jobs stay available, so you can check what was sent and print
+the same thing again without rebuilding it from scratch.
 
 <p>
   <img src="assets/screenshots/web-desktop-history.png" alt="KotPrinter desktop history view with rendered jobs and retention controls" width="760">
