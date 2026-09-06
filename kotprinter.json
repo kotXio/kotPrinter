@@ -32,5 +32,10 @@
     "cropAlign": "center",
     "invert": false,
     "threshold": null
+  },
+  "history": {
+    "enabled": true,
+    "retentionDays": 30,
+    "cleanupOnStart": true
   }
 }

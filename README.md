@@ -5,11 +5,17 @@
 A small Python CLI for printing text and images on a cheap Bluetooth thermal
 cat printer without the vendor mobile app.
 
-Current release: `0.3`.
+Current release: `0.4`.
+
+New in `0.4`: a local web UI for desktop and mobile browsers, so you can print,
+manage the queue, review history, adjust settings, run diagnostics, and reprint
+jobs from one place.
 
 The tested printer ignores many normal POS commands, so this tool renders text
 and images into a `384`-dot-wide 1-bit raster and sends that raster over
-Bluetooth RFCOMM. It is not a CUPS driver and does not run a print server.
+Bluetooth RFCOMM. It is not a CUPS driver. The local server mode is a small
+trusted-device API and web UI for this project, not a general system print
+spooler.
 
 The classic entrypoint still works:
 
@@ -17,7 +23,7 @@ The classic entrypoint still works:
 python3 print.py text 'hello'
 ```
 
-`v0.3` also provides a package entrypoint:
+The package entrypoint also works:
 
 ```sh
 python3 -m kotprinter text 'hello'
@@ -31,13 +37,41 @@ python3 -m kotprinter text 'hello'
 - Configure printer, text, and image defaults with `kotprinter.json`.
 - Check local dependencies, Bluetooth, RFCOMM, systemd, permissions, and live
   printer reachability.
-- Generate and install a systemd RFCOMM service from the active config.
+- Generate and install systemd services for RFCOMM binding and the local web
+  UI/API server.
 - Tune text size, alignment, padding, line spacing, and text density.
 - Tune image brightness, contrast, gamma, dithering, thresholding, inversion,
   rotation, crop, fit, and autofit behavior.
 - Use presets for common jobs: `text`, `label`, `photo`, and `sticker`.
-- Rebind/recover `/dev/rfcomm0` before jobs when the device node is stale or
-  missing.
+- Use the install-time RFCOMM service, serial-device permissions, and a narrow
+  sudoers recovery rule during runtime.
+- Create durable rendered jobs with exact preview artifacts.
+- Run a local HTTP API with queue, history, settings, diagnostics, and reprint.
+- Serve the built Vue/Vuetify frontend from the same origin as `/api`.
+
+## Web UI Screenshots
+
+The `0.4` web UI is useful from a desk and from a phone: render first, check the
+thermal preview, then print only when the result looks right.
+
+<p>
+  <img src="assets/screenshots/web-desktop-print-overview.png" alt="KotPrinter desktop print view with text editor, options, thermal preview, and printer context" width="760">
+</p>
+
+Image printing keeps the same workflow on mobile, with the original/thermal
+view, presets, fit, rotation, and contrast controls close at hand.
+
+<p>
+  <img src="assets/screenshots/web-mobile-image-options.png" alt="KotPrinter mobile image print view with thermal preview and options" width="360">
+</p>
+
+History keeps rendered jobs around for checking and reprinting later.
+
+<p>
+  <img src="assets/screenshots/web-desktop-history.png" alt="KotPrinter desktop history view with rendered jobs and retention controls" width="760">
+</p>
+
+More screenshots are in [`assets/screenshots`](assets/screenshots/).
 
 ## Supported Printer
 
@@ -139,14 +173,14 @@ trust AA:BB:CC:DD:EE:FF
 quit
 ```
 
-Generate and inspect the systemd RFCOMM service:
+Generate and inspect the systemd services:
 
 ```sh
 python3 print.py install --dry-run
 ```
 
-`install --dry-run` is read-only. It prints the generated unit and the system
-commands that would be run.
+`install --dry-run` is read-only. It prints the generated RFCOMM and server
+units plus the system commands that would be run.
 
 Apply it:
 
@@ -154,13 +188,35 @@ Apply it:
 python3 print.py install
 ```
 
-`install` writes a generated service to `/etc/systemd/system`, runs
-`systemctl daemon-reload`, and enables/starts the configured service. It reports
-serial group membership but does not change user groups automatically.
+`install` writes generated services to `/etc/systemd/system`, installs a narrow
+sudoers rule in `/etc/sudoers.d/kotprinter-rfcomm`, runs
+`systemctl daemon-reload`, and enables/restarts the configured RFCOMM and
+KotPrinter server services. It reports serial group membership but does not
+change user groups automatically.
 
-The service is generated from the active config. The checked-in
+The sudoers rule allows the runtime user to run only this recovery command
+without a password:
+
+```sh
+sudo -n /usr/bin/systemctl restart rfcomm-printer.service
+```
+
+The RFCOMM service is generated from the active config. The checked-in
 `systemd/rfcomm-printer.service` file is only an example for the tested printer;
-do not edit it for normal installs.
+do not edit it for normal installs. The server service is generated from the
+resolved project root at install time, so the installed unit does not depend on
+a hardcoded checkout path in the source code.
+
+Build the frontend before applying the install plan:
+
+```sh
+cd web
+npm run build
+cd ..
+```
+
+The server unit intentionally does not run npm during boot. If `web/dist` is
+missing, `install --dry-run` warns and `install` fails before writing services.
 
 This printer does not keep a permanently active Bluetooth connection after each
 job. Tools may show the RFCOMM connection as closed when the printer is idle.
@@ -227,6 +283,73 @@ python3 print.py img ./picture.png --preview
 ```
 
 Preview output is written to `debug.png` in the current working directory.
+
+## Local Web UI And API
+
+The local server can serve both the HTTP API and the built frontend from one
+origin. For normal local use, run:
+
+```sh
+./run-web.sh
+```
+
+The script installs frontend dependencies if needed, builds `web/dist` if it is
+missing, prints the local/LAN URLs, and starts `kotprinter.server`.
+
+Useful overrides:
+
+```sh
+KOTPRINTER_REBUILD=1 ./run-web.sh
+KOTPRINTER_PORT=18080 ./run-web.sh
+KOTPRINTER_HOST=127.0.0.1 ./run-web.sh
+KOTPRINTER_LAN_HOST="$(hostname -I | awk '{print $1}')" ./run-web.sh
+```
+
+Manual build/start commands are:
+
+```sh
+cd web
+npm install
+npm run build
+cd ..
+```
+
+Start the backend from the project root. Use localhost for machine-local access:
+
+```sh
+python3 -m kotprinter.server --host 127.0.0.1 --port 8000 --project-root "$PWD"
+```
+
+Use the Pi LAN address only on a trusted local network:
+
+```sh
+python3 -m kotprinter.server --host 0.0.0.0 --port 8000 --project-root "$PWD"
+```
+
+For LAN access, use the `LAN:` URL printed by `./run-web.sh`. If you start the
+server manually, run `hostname -I` on the Pi and use its LAN address as the
+browser host. Phones, tablets, and desktops on the same trusted LAN use that
+same URL. On the Pi itself, use `http://127.0.0.1:8000/` or the LAN URL.
+
+Useful direct routes:
+
+```text
+/print
+/jobs
+/history
+/settings
+/diagnostics
+/api/health
+```
+
+The frontend calls same-origin `/api`, so phone and tablet browsers do not need
+to know about `127.0.0.1` and do not depend on a separate CORS setup.
+
+Server mode has no login or user model. Do not expose it to the internet,
+public DNS, or an untrusted network without a separate security design.
+
+For frontend development, Vite can still be used from `web/`; its dev server
+proxies `/api` to `http://127.0.0.1:8000`.
 
 ## Common Recipes
 
@@ -301,7 +424,8 @@ Important rules:
 - `schemaVersion` must be `1`.
 - `device.mac` must be a Bluetooth MAC address.
 - `device.port` must be an absolute path.
-- `device.rfcommService` must be a `.service` name, not a path.
+- `device.rfcommService` must be a `.service` name using only letters,
+  numbers, dots, underscores, hyphens, and `@`.
 - `printer.width` must be divisible by `8`.
 - `image.rotate` must be `0`, `90`, `180`, or `270`.
 - `image.threshold` must be `0..255` or `null`.
@@ -319,17 +443,36 @@ python3 print.py --version
 python3 print.py [--config PATH] COMMAND ...
 python3 -m kotprinter --version
 python3 -m kotprinter [--config PATH] COMMAND ...
+python3 -m kotprinter.server [--host HOST] [--port PORT] [--project-root PATH]
 ```
 
 Commands:
 
 | Command | Description |
 | --- | --- |
-| `check [--live]` | Inspect local setup. `--live` also contacts the printer without printing. |
-| `install [--dry-run]` | Generate and install the systemd RFCOMM binding from config. |
+| `check [--live]` | Inspect local setup, frontend build, server service, and printer environment. `--live` also contacts the printer without printing. |
+| `install [--dry-run]` | Generate and install the systemd RFCOMM binding and KotPrinter server services. |
 | `info` | Query printer voltage, DPI, battery estimate, serial number, and settings. |
 | `text TEXT [options]` | Render text to a raster image and print it. |
 | `img PATH [options]` | Render an image file to a raster image and print it. |
+
+Server entrypoint:
+
+```sh
+python3 -m kotprinter.server --host 127.0.0.1 --port 8000 --project-root "$PWD"
+```
+
+Important server options:
+
+| Option | Description |
+| --- | --- |
+| `--host` | Bind address. Defaults to `127.0.0.1`; use `0.0.0.0` only for trusted LAN access. |
+| `--port` | HTTP port. Defaults to `8000`. |
+| `--project-root` | Project root used for `kotprinter.json`, `data/`, and `web/dist`. |
+| `--config` | Explicit config path. |
+| `--data-root` | Explicit job/history data root. |
+| `--server-service` | Systemd service name expected by diagnostics; defaults to `kotprinter.service`. |
+| `--static-root` | Explicit frontend build directory; defaults to `PROJECT_ROOT/web/dist`. |
 
 ### Text Options
 
@@ -438,10 +581,13 @@ The printer protocol used here is intentionally simple:
 5. Send the raster payload to the printer in height-bounded bands.
 6. Feed paper by sending newline characters.
 
-The CLI retries the wake handshake and can restart the configured RFCOMM service
-before a job if the device node is missing, closed, or stale. It does not retry
-after a payload write failure because the printer may already have produced a
-partial print.
+The CLI retries the wake handshake before a job. If the configured RFCOMM device
+is missing, stale, or does not wake the printer, runtime performs one automatic
+recovery attempt by running the exact sudoers command installed by `install`:
+`sudo -n /usr/bin/systemctl restart rfcomm-printer.service`. Server runtime
+also applies a short cooldown so repeated API calls cannot loop privileged
+restarts. The CLI does not retry after a payload write failure because the
+printer may already have produced a partial print.
 
 Long images are split into several ESC/POS raster commands before transmission.
 This keeps large photo prints from overwhelming the small printer buffer while
@@ -474,11 +620,17 @@ Try:
 
 ```sh
 python3 print.py info
+```
+
+If that still fails, power-cycle the printer and retry. Runtime will attempt one
+automatic RFCOMM service restart when opening the printer. If recovery fails,
+check that `install` was run after this version so the sudoers rule exists, then
+repair the service manually if needed:
+
+```sh
 sudo systemctl restart rfcomm-printer.service
 python3 print.py info
 ```
-
-If that still fails, power-cycle the printer and retry.
 
 ### The Printer Goes Away After Sitting Idle
 
@@ -488,9 +640,9 @@ again before printing. A long button press toggles power.
 ### `install` Fails With `sudo -n`
 
 `install` uses non-interactive `sudo -n`, so it fails instead of prompting for a
-password. Run it from a user with passwordless sudo for the required systemd
-commands, run it as root, or copy the commands printed by `install --dry-run`
-and run them manually.
+password. Run it from a user with passwordless sudo for the required systemd and
+sudoers commands, run it as root, or copy the commands printed by
+`install --dry-run` and run them manually.
 
 ### Permission Denied Opening `/dev/rfcomm0`
 
@@ -544,7 +696,9 @@ setup, keep the GUI Bluetooth menu closed and use `bluetoothctl` consistently.
 ```sh
 systemctl status bluetooth.service --no-pager
 systemctl status rfcomm-printer.service --no-pager
+systemctl status kotprinter.service --no-pager
 journalctl -u rfcomm-printer.service -n 50 --no-pager
+journalctl -u kotprinter.service -n 50 --no-pager
 rfcomm -a
 ls -l /dev/rfcomm0
 bluetoothctl show
@@ -562,7 +716,8 @@ bluetoothctl devices
   this printer.
 - The tested printer can behave as powered off after idle sleep; if it does not
   answer, turn it on manually and retry.
-- No queue or print server mode is implemented yet.
+- Local server mode has no authentication; keep it on localhost or a trusted
+  LAN unless a separate security layer is designed.
 - No CUPS integration is provided.
 
 ## Author

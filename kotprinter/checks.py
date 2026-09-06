@@ -1,6 +1,7 @@
 import getpass
 import grp
 import importlib
+import json
 import os
 import shutil
 import stat
@@ -9,7 +10,12 @@ import termios
 import time
 from dataclasses import asdict, dataclass
 from importlib import metadata
+from pathlib import Path
 from typing import List
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
+
+from .install import DEFAULT_SERVER_PORT, DEFAULT_SERVER_SERVICE
 
 
 OK = "OK"
@@ -33,17 +39,41 @@ class CheckResult:
         return asdict(self)
 
 
-def run_checks(config, config_path=None, config_warnings=None, live=False):
+def run_checks(
+    config,
+    config_path=None,
+    config_warnings=None,
+    live=False,
+    project_root=None,
+    server_port=DEFAULT_SERVER_PORT,
+    server_service=DEFAULT_SERVER_SERVICE,
+):
     results = []
     config_warnings = config_warnings or []
+    resolved_project_root = _resolve_project_root(project_root)
 
     results.extend(_check_config(config, config_path, config_warnings))
     results.extend(_check_python_dependencies())
     results.append(_check_command_available("rfcomm", "RFCOMM tool"))
     results.extend(_check_bluetooth())
-    results.extend(_check_systemd_unit(config["device"]["rfcommService"]))
+    results.extend(
+        _check_systemd_unit(
+            config["device"]["rfcommService"],
+            label="RFCOMM unit",
+            missing_action="run `python3 print.py install`",
+        )
+    )
     results.extend(_check_rfcomm_device(config["device"]["port"]))
     results.extend(_check_current_user(config["device"]["port"]))
+    results.append(_check_frontend_build(resolved_project_root))
+    results.extend(
+        _check_systemd_unit(
+            server_service,
+            label="Server unit",
+            missing_action="run `python3 print.py install`",
+        )
+    )
+    results.append(_check_server_health(server_port, server_service))
 
     if live:
         results.append(_check_printer_live(config))
@@ -220,35 +250,35 @@ def _find_bluetooth_field(output, field):
     return None
 
 
-def _check_systemd_unit(service_name):
+def _check_systemd_unit(service_name, *, label="Systemd unit", missing_action=""):
     results = []
     unit_path = os.path.join("/etc/systemd/system", service_name)
     if os.path.exists(unit_path):
-        results.append(CheckResult("Systemd unit file", OK, unit_path))
+        results.append(CheckResult(f"{label} file", OK, unit_path))
     else:
         results.append(
             CheckResult(
-                "Systemd unit file",
+                f"{label} file",
                 FAIL,
                 f"{unit_path} not found",
-                "run `python3 print.py install --dry-run`, then `python3 print.py install`",
+                missing_action,
             )
         )
 
     if not shutil.which("systemctl"):
         results.append(
-            CheckResult("Systemd unit state", WARN, "`systemctl` not found")
+            CheckResult(f"{label} state", WARN, "`systemctl` not found")
         )
         return results
 
     enabled = _run_command(["systemctl", "is-enabled", service_name])
     enabled_state = enabled.stdout.strip() or enabled.stderr.strip() or "unknown"
     if enabled.returncode == 0 and enabled_state == "enabled":
-        results.append(CheckResult("Systemd unit enabled", OK, "enabled"))
+        results.append(CheckResult(f"{label} enabled", OK, "enabled"))
     else:
         results.append(
             CheckResult(
-                "Systemd unit enabled",
+                f"{label} enabled",
                 WARN,
                 enabled_state,
                 f"run `sudo systemctl enable {service_name}`",
@@ -258,11 +288,11 @@ def _check_systemd_unit(service_name):
     active = _run_command(["systemctl", "is-active", service_name])
     active_state = active.stdout.strip() or active.stderr.strip() or "unknown"
     if active.returncode == 0 and active_state == "active":
-        results.append(CheckResult("Systemd unit active", OK, "active"))
+        results.append(CheckResult(f"{label} active", OK, "active"))
     elif active_state == "failed":
         results.append(
             CheckResult(
-                "Systemd unit active",
+                f"{label} active",
                 FAIL,
                 "failed",
                 f"run `systemctl status {service_name} --no-pager`",
@@ -271,7 +301,7 @@ def _check_systemd_unit(service_name):
     else:
         results.append(
             CheckResult(
-                "Systemd unit active",
+                f"{label} active",
                 WARN,
                 active_state,
                 f"run `sudo systemctl restart {service_name}`",
@@ -279,6 +309,71 @@ def _check_systemd_unit(service_name):
         )
 
     return results
+
+
+def _check_frontend_build(project_root):
+    index_path = project_root / "web" / "dist" / "index.html"
+    if index_path.is_file():
+        return CheckResult("Frontend build", OK, str(index_path))
+
+    return CheckResult(
+        "Frontend build",
+        FAIL,
+        f"{index_path} not found",
+        f"run `cd {project_root / 'web'} && npm run build`",
+    )
+
+
+def _check_server_health(server_port, server_service):
+    url = f"http://127.0.0.1:{server_port}/api/health"
+    try:
+        with urlopen(url, timeout=2) as response:
+            status = response.getcode()
+            body = response.read(4096)
+    except HTTPError as e:
+        return CheckResult(
+            "Server health",
+            WARN,
+            f"{url} returned HTTP {e.code}",
+            f"check `journalctl -u {server_service} -n 50 --no-pager`",
+        )
+    except (OSError, URLError) as e:
+        return CheckResult(
+            "Server health",
+            WARN,
+            f"{url} unavailable: {e}",
+            "start the server or run `python3 print.py install`",
+        )
+
+    if status != 200:
+        return CheckResult(
+            "Server health",
+            WARN,
+            f"{url} returned HTTP {status}",
+            "check the server logs",
+        )
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        return CheckResult(
+            "Server health",
+            WARN,
+            f"{url} returned invalid JSON: {e}",
+            "check the server logs",
+        )
+
+    if payload.get("ok") is True:
+        version = payload.get("version")
+        message = "healthy" if version is None else f"healthy, version {version}"
+        return CheckResult("Server health", OK, message)
+
+    return CheckResult(
+        "Server health",
+        WARN,
+        f"{url} did not return ok=true",
+        "check the server logs",
+    )
 
 
 def _check_rfcomm_device(port):
@@ -464,6 +559,10 @@ def _extract_bytes_field(data, pattern):
     if not match:
         return None
     return match.group(1).decode(errors="replace")
+
+
+def _resolve_project_root(project_root):
+    return Path(project_root).expanduser().resolve() if project_root else Path.cwd().resolve()
 
 
 def _run_command(args, timeout=3):

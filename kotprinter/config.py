@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import List, Optional
+from uuid import uuid4
 
 
 DEFAULT_CONFIG_NAME = "kotprinter.json"
@@ -44,6 +45,11 @@ DEFAULT_CONFIG = {
         "invert": False,
         "threshold": None,
     },
+    "history": {
+        "enabled": True,
+        "retentionDays": 30,
+        "cleanupOnStart": True,
+    },
 }
 
 
@@ -58,8 +64,48 @@ class LoadedConfig:
     warnings: List[str]
 
 
+@dataclass(frozen=True)
+class ConfigIssue:
+    field: str
+    message: str
+
+    def as_dict(self):
+        return {
+            "field": self.field,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class ConfigValidationResult:
+    ok: bool
+    data: Optional[dict]
+    warnings: List[str]
+    errors: List[ConfigIssue]
+
+    def as_dict(self):
+        return {
+            "ok": self.ok,
+            "data": self.data,
+            "warnings": list(self.warnings),
+            "errors": [error.as_dict() for error in self.errors],
+        }
+
+
 def get_default_config():
     return copy.deepcopy(DEFAULT_CONFIG)
+
+
+def get_project_config_path(project_root):
+    """Return the explicit project-local config path for future server mode."""
+    if project_root is None:
+        raise ConfigError("Project root cannot be empty")
+
+    root = os.fspath(project_root)
+    if root == "":
+        raise ConfigError("Project root cannot be empty")
+
+    return os.path.join(os.path.abspath(root), DEFAULT_CONFIG_NAME)
 
 
 def load_config(path=None):
@@ -86,6 +132,58 @@ def load_config(path=None):
     return LoadedConfig(config, loaded_path, warnings)
 
 
+def validate_config_data(raw_config, base_config=None):
+    """Validate a proposed config update without writing it to disk."""
+    warnings = []
+    config = (
+        copy.deepcopy(base_config)
+        if base_config is not None
+        else get_default_config()
+    )
+
+    if not isinstance(raw_config, dict):
+        return ConfigValidationResult(
+            ok=False,
+            data=None,
+            warnings=warnings,
+            errors=[
+                ConfigIssue(
+                    field="<root>",
+                    message="top-level JSON value must be an object",
+                )
+            ],
+        )
+
+    try:
+        _merge_config(config, raw_config, warnings)
+        _validate_config(config)
+    except ConfigError as e:
+        return ConfigValidationResult(
+            ok=False,
+            data=None,
+            warnings=warnings,
+            errors=[_config_issue_from_error(e)],
+        )
+
+    return ConfigValidationResult(
+        ok=True,
+        data=config,
+        warnings=warnings,
+        errors=[],
+    )
+
+
+def write_config_atomic(path, raw_config, base_config=None):
+    """Validate and save config through a same-directory temp file replace."""
+    selected_path = _require_config_path(path)
+    validation = validate_config_data(raw_config, base_config=base_config)
+    if not validation.ok:
+        raise ConfigError(_format_validation_errors(validation.errors))
+
+    _write_json_config_atomic(selected_path, validation.data)
+    return LoadedConfig(validation.data, selected_path, validation.warnings)
+
+
 def _read_json_config(path):
     try:
         with open(path, "r", encoding="utf-8") as config_file:
@@ -94,6 +192,34 @@ def _read_json_config(path):
         raise ConfigError(f"{path}: invalid JSON at line {e.lineno}, column {e.colno}") from e
     except OSError as e:
         raise ConfigError(f"Cannot read config file {path}: {e}") from e
+
+
+def _write_json_config_atomic(path, config):
+    final_path = os.path.abspath(path)
+    directory = os.path.dirname(final_path)
+    if not os.path.isdir(directory):
+        raise ConfigError(f"Config directory not found: {directory}")
+
+    basename = os.path.basename(final_path)
+    tmp_path = os.path.join(
+        directory,
+        f".{basename}.tmp-{os.getpid()}-{uuid4().hex}",
+    )
+
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as config_file:
+            json.dump(config, config_file, indent=2)
+            config_file.write("\n")
+            config_file.flush()
+            os.fsync(config_file.fileno())
+        os.replace(tmp_path, final_path)
+    except OSError as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise ConfigError(f"Cannot write config file {path}: {e}") from e
 
 
 def _merge_config(base, override, warnings, prefix=""):
@@ -159,6 +285,11 @@ def _validate_config(config):
     _require_choice(image, "image.cropAlign", {"top", "center", "bottom"})
     _require_bool(image, "image.invert")
     _require_optional_int(image, "image.threshold", minimum=0, maximum=255)
+
+    history = config["history"]
+    _require_bool(history, "history.enabled")
+    _require_optional_int(history, "history.retentionDays", minimum=0)
+    _require_bool(history, "history.cleanupOnStart")
 
 
 def _require_int(section, dotted_key, minimum=None):
@@ -237,6 +368,11 @@ def _require_systemd_service_name(section, dotted_key):
         raise ConfigError(f"{dotted_key} must end with .service")
     if any(char.isspace() for char in value):
         raise ConfigError(f"{dotted_key} must not contain whitespace")
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", value):
+        raise ConfigError(
+            f"{dotted_key} may contain only letters, numbers, dots, underscores, "
+            "hyphens, and @"
+        )
 
 
 def _require_choice(section, dotted_key, choices):
@@ -254,3 +390,41 @@ def _require_mac(section, dotted_key):
         r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", value, flags=re.I
     ):
         raise ConfigError(f"{dotted_key} must be a Bluetooth MAC address")
+
+
+def _require_config_path(path):
+    if path is None:
+        raise ConfigError("Config path is required")
+
+    selected_path = os.fspath(path)
+    if selected_path == "":
+        raise ConfigError("Config path cannot be empty")
+
+    return selected_path
+
+
+def _config_issue_from_error(error):
+    message = str(error)
+    return ConfigIssue(
+        field=_field_from_error_message(message),
+        message=message,
+    )
+
+
+def _field_from_error_message(message):
+    if message.startswith("Unsupported schemaVersion"):
+        return "schemaVersion"
+
+    token = message.split(" ", 1)[0].rstrip(":")
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(\.[A-Za-z][A-Za-z0-9]*)*", token):
+        return token
+
+    return "<root>"
+
+
+def _format_validation_errors(errors):
+    if not errors:
+        return "Invalid config"
+    if len(errors) == 1:
+        return errors[0].message
+    return "Invalid config: " + "; ".join(error.message for error in errors)

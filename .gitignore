@@ -10,6 +10,7 @@ env/
 debug*.png
 preview*.png
 output*.png
+data/
 
 *.log
 *.pcap
