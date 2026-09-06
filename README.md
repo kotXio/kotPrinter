@@ -2,14 +2,15 @@
 
 ![A small Bluetooth cat printer](assets/cat_printer.jpg)
 
-A small Python CLI for printing text and images on a cheap Bluetooth thermal
-cat printer without the vendor mobile app.
+KotPrinter prints text and images on a cheap Bluetooth thermal cat printer
+without the vendor mobile app. Use it from the Python CLI or from the local web
+UI.
 
 Current release: `0.4`.
 
-New in `0.4`: a local web UI for desktop and mobile browsers, so you can print,
-manage the queue, review history, adjust settings, run diagnostics, and reprint
-jobs from one place.
+New in `0.4`: the web UI works from desktop and mobile browsers, so you can
+print, manage the queue, review history, adjust settings, run diagnostics, and
+reprint jobs from one place.
 
 The tested printer ignores many normal POS commands, so this tool renders text
 and images into a `384`-dot-wide 1-bit raster and sends that raster over
@@ -51,7 +52,7 @@ python3 -m kotprinter text 'hello'
 
 ## Web UI Screenshots
 
-![KotPrinter desktop web UI](assets/screenshots/web-desktop-print-overview.png)
+![KotPrinter desktop web UI](assets/screenshots/web-desktop-text-options.png)
 
 More screenshots are in [`assets/screenshots`](https://github.com/kotXio/kotPrinter/blob/main/assets/screenshots).
 
