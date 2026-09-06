@@ -51,32 +51,9 @@ python3 -m kotprinter text 'hello'
 
 ## Web UI Screenshots
 
-Version `0.4` adds the part this project was missing: a small local web app for
-daily printing. Open it on the Pi, a laptop, or a phone on the same network,
-prepare the job, check the thermal preview, and send it only when it looks
-right.
+![KotPrinter desktop web UI](assets/screenshots/web-desktop-print-overview.png)
 
-<p>
-  <img src="assets/screenshots/web-desktop-print-overview.png" alt="KotPrinter desktop print view with text editor, options, thermal preview, and printer context" width="760">
-</p>
-
-The mobile view keeps the image preview, thermal render, presets, fit, rotation,
-brightness, contrast, and print action reachable when you are standing next to
-the printer.
-
-<p>
-  <img src="assets/screenshots/web-mobile-image-options.png" alt="KotPrinter mobile image print view with thermal preview and options" width="360">
-</p>
-
-History is there for the normal small experiments that happen with thermal
-paper. Rendered jobs stay available, so you can check what was sent and print
-the same thing again without rebuilding it from scratch.
-
-<p>
-  <img src="assets/screenshots/web-desktop-history.png" alt="KotPrinter desktop history view with rendered jobs and retention controls" width="760">
-</p>
-
-More screenshots are in [`assets/screenshots`](assets/screenshots/).
+More screenshots are in [`assets/screenshots`](https://github.com/kotXio/kotPrinter/blob/main/assets/screenshots).
 
 ## Supported Printer
 
